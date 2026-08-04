@@ -127,6 +127,11 @@ typedef struct delimiter {
    */
   int loose_open;
   int loose_close;
+  /** Set by the tolerant lookahead pre-pass: true when a later delimiter has
+   * the same character and the same run length and can close. R6 uses this to
+   * keep an opener reserved for its own equal-length partner.
+   */
+  int has_later_equal;
 } delimiter;
 
 /**

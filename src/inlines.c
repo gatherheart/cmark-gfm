@@ -73,7 +73,7 @@ static CMARK_INLINE bool S_is_line_end_char(char c) {
 }
 
 static delimiter *S_insert_emph(subject *subj, delimiter *opener,
-                                delimiter *closer);
+                                delimiter *closer, bool tolerant);
 
 static int parse_inline(cmark_parser *parser, subject *subj, cmark_node *parent, int options);
 
@@ -701,39 +701,72 @@ static cmark_syntax_extension *get_extension_for_special_char(cmark_parser *pars
   return NULL;
 }
 
+// Tolerant lookahead pre-pass. For each delimiter, record whether some later
+// delimiter shares its character and run length and can close. R6 consults
+// this to avoid spending an opener on a mismatched closer while its own
+// equal-length partner is still ahead.
+static void S_mark_later_equal_closers(subject *subj, bufsize_t stack_bottom) {
+  delimiter *d, *later;
+
+  for (d = subj->last_delim; d != NULL && d->position >= stack_bottom;
+       d = d->previous) {
+    d->has_later_equal = 0;
+    for (later = d->next; later != NULL; later = later->next) {
+      if (later->can_close && later->delim_char == d->delim_char &&
+          later->length == d->length) {
+        d->has_later_equal = 1;
+        break;
+      }
+    }
+  }
+}
+
 // Look backwards from `closer` for the first delimiter that may open a match.
-// Extracted verbatim from process_emphasis so that the tolerant rules have a
-// single place to hook. Returns NULL when no candidate qualifies.
+// Extracted from process_emphasis so the tolerant rules have a single hook.
+// Returns NULL when no candidate qualifies.
 static delimiter *S_find_opener(delimiter *closer, bufsize_t stack_bottom,
                                 bufsize_t openers_bottom[3][128],
                                 bool tolerant) {
-  delimiter *opener = closer->previous;
+  delimiter *opener;
+  int pass;
+  // R4: under tolerance, sweep twice. Pass 0 accepts only openers whose run
+  // length equals the closer's; pass 1 permits unequal lengths under R6's
+  // guard. Strict mode keeps its single sweep.
+  int passes = tolerant ? 2 : 1;
 
-  while (opener != NULL && opener->position >= stack_bottom &&
-         opener->position >= openers_bottom[closer->length % 3][closer->delim_char]) {
-    if (opener->can_open && opener->delim_char == closer->delim_char &&
-        !(tolerant && opener->loose_open && closer->loose_close)) {
-      // R1': never pair two loose inner edges. R1" alone would accept
-      // "2 ** 3 ** 4"; this rejects it, while still allowing one loose side
-      // as cases 1 and 2 require.
-      //
-      // R3: the "rule of three" exists to stop intraword emphasis in
-      // *foo**bar**baz*-shaped input. Under tolerance the equal-length
-      // preference (R4) takes over that job, and the rule of three actively
-      // blocks case 5 from pairing its two '*' runs.
-      if (tolerant) {
-        return opener;
+  for (pass = 0; pass < passes; pass++) {
+    opener = closer->previous;
+    while (opener != NULL && opener->position >= stack_bottom &&
+           opener->position >= openers_bottom[closer->length % 3][closer->delim_char]) {
+      if (opener->can_open && opener->delim_char == closer->delim_char &&
+          !(tolerant && opener->loose_open && closer->loose_close)) {
+        // R1': never pair two loose inner edges. R1" alone would accept
+        // "2 ** 3 ** 4"; this rejects it, while still allowing one loose side
+        // as cases 1 and 2 require.
+        if (tolerant) {
+          // R3: the rule of three is dropped here; R4's length preference
+          // takes over its job of preventing nonsense pairings.
+          if (pass == 0) {
+            if (opener->length == closer->length)
+              return opener;
+          } else if (!opener->has_later_equal) {
+            // R6: fall back to an unequal-length opener only when that opener
+            // has no equal-length closer still ahead. This is what lets case
+            // 10 (**안녕하세요*) pair, while leaving case 12's
+            // (**굵게*기울임**) lone '*' literal, because its '**' is still
+            // waiting for the trailing '**'.
+            return opener;
+          }
+        } else if (!(closer->can_open || opener->can_close) ||
+                   closer->length % 3 == 0 ||
+                   (opener->length + closer->length) % 3 != 0) {
+          // interior closer of size 2 can't match opener of size 1
+          // or of size 1 can't match 2
+          return opener;
+        }
       }
-
-      // interior closer of size 2 can't match opener of size 1
-      // or of size 1 can't match 2
-      if (!(closer->can_open || opener->can_close) ||
-          closer->length % 3 == 0 ||
-          (opener->length + closer->length) % 3 != 0) {
-        return opener;
-      }
+      opener = opener->previous;
     }
-    opener = opener->previous;
   }
   return NULL;
 }
@@ -755,6 +788,12 @@ static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stac
     openers_bottom[i]['_'] = stack_bottom;
     openers_bottom[i]['\''] = stack_bottom;
     openers_bottom[i]['"'] = stack_bottom;
+  }
+
+  // R4/R6 lookahead: must run before any pairing, while the delimiter list is
+  // still complete.
+  if (tolerant) {
+    S_mark_later_equal_closers(subj, stack_bottom);
   }
 
   // move back to first relevant delim.
@@ -780,7 +819,7 @@ static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stac
           closer = closer->next;
       } else if (closer->delim_char == '*' || closer->delim_char == '_') {
         if (opener_found) {
-          closer = S_insert_emph(subj, opener, closer);
+          closer = S_insert_emph(subj, opener, closer, tolerant);
         } else {
           closer = closer->next;
         }
@@ -826,7 +865,7 @@ static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stac
 }
 
 static delimiter *S_insert_emph(subject *subj, delimiter *opener,
-                                delimiter *closer) {
+                                delimiter *closer, bool tolerant) {
   delimiter *delim, *tmp_delim;
   bufsize_t use_delims;
   cmark_node *opener_inl = opener->inl_text;
@@ -836,11 +875,21 @@ static delimiter *S_insert_emph(subject *subj, delimiter *opener,
   cmark_node *tmp, *tmpnext, *emph;
 
   // calculate the actual number of characters used from this closer
-  use_delims = (closer_num_chars >= 2 && opener_num_chars >= 2) ? 2 : 1;
+  if (tolerant && opener_num_chars != closer_num_chars) {
+    // R6: this pair only exists because no equal-length partner was available,
+    // so the node type follows the opener and both runs are consumed whole.
+    // That is what turns case 10 (**\uc548\ub155\ud558\uc138\uc694*) into a single
+    // <strong> instead of leaving a stray '*' beside an <em>.
+    use_delims = opener_num_chars >= 2 ? 2 : 1;
+    opener_num_chars = 0;
+    closer_num_chars = 0;
+  } else {
+    use_delims = (closer_num_chars >= 2 && opener_num_chars >= 2) ? 2 : 1;
+    opener_num_chars -= use_delims;
+    closer_num_chars -= use_delims;
+  }
 
   // remove used characters from associated inlines.
-  opener_num_chars -= use_delims;
-  closer_num_chars -= use_delims;
   opener_inl->as.literal.len = opener_num_chars;
   closer_inl->as.literal.len = closer_num_chars;
 
