@@ -701,6 +701,35 @@ static cmark_syntax_extension *get_extension_for_special_char(cmark_parser *pars
   return NULL;
 }
 
+// Look backwards from `closer` for the first delimiter that may open a match.
+// Extracted verbatim from process_emphasis so that the tolerant rules have a
+// single place to hook. Returns NULL when no candidate qualifies.
+static delimiter *S_find_opener(delimiter *closer, bufsize_t stack_bottom,
+                                bufsize_t openers_bottom[3][128],
+                                bool tolerant) {
+  delimiter *opener = closer->previous;
+
+  while (opener != NULL && opener->position >= stack_bottom &&
+         opener->position >= openers_bottom[closer->length % 3][closer->delim_char]) {
+    if (opener->can_open && opener->delim_char == closer->delim_char &&
+        !(tolerant && opener->loose_open && closer->loose_close)) {
+      // R1': never pair two loose inner edges. R1" alone would accept
+      // "2 ** 3 ** 4"; this rejects it, while still allowing one loose side
+      // as cases 1 and 2 require.
+      //
+      // interior closer of size 2 can't match opener of size 1
+      // or of size 1 can't match 2
+      if (!(closer->can_open || opener->can_close) ||
+          closer->length % 3 == 0 ||
+          (opener->length + closer->length) % 3 != 0) {
+        return opener;
+      }
+    }
+    opener = opener->previous;
+  }
+  return NULL;
+}
+
 static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stack_bottom) {
   delimiter *candidate;
   delimiter *closer = NULL;
@@ -732,27 +761,8 @@ static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stac
     cmark_syntax_extension *extension = get_extension_for_special_char(parser, closer->delim_char);
     if (closer->can_close) {
       // Now look backwards for first matching opener:
-      opener = closer->previous;
-      opener_found = false;
-      while (opener != NULL && opener->position >= stack_bottom &&
-             opener->position >= openers_bottom[closer->length % 3][closer->delim_char]) {
-        if (opener->can_open && opener->delim_char == closer->delim_char &&
-            !(tolerant && opener->loose_open && closer->loose_close)) {
-          // R1': never pair two loose inner edges. R1" alone would accept
-          // "2 ** 3 ** 4"; this rejects it, while still allowing one loose
-          // side as cases 1 and 2 require.
-          //
-          // interior closer of size 2 can't match opener of size 1
-          // or of size 1 can't match 2
-          if (!(closer->can_open || opener->can_close) ||
-	      closer->length % 3 == 0 ||
-              (opener->length + closer->length) % 3 != 0) {
-            opener_found = true;
-            break;
-          }
-        }
-        opener = opener->previous;
-      }
+      opener = S_find_opener(closer, stack_bottom, openers_bottom, tolerant);
+      opener_found = (opener != NULL);
       old_closer = closer;
 
       if (extension) {
