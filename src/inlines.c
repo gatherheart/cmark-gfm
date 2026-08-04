@@ -74,6 +74,8 @@ static CMARK_INLINE bool S_is_line_end_char(char c) {
 
 static delimiter *S_insert_emph(subject *subj, delimiter *opener,
                                 delimiter *closer, bool tolerant);
+static delimiter *S_insert_emph_split(subject *subj, delimiter *opener,
+                                      delimiter *closer, bool *split);
 
 static int parse_inline(cmark_parser *parser, subject *subj, cmark_node *parent, int options);
 
@@ -819,7 +821,16 @@ static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stac
           closer = closer->next;
       } else if (closer->delim_char == '*' || closer->delim_char == '_') {
         if (opener_found) {
-          closer = S_insert_emph(subj, opener, closer, tolerant);
+          if (tolerant) {
+            // R8: a crossing pair cannot go through S_insert_emph, which walks
+            // siblings from opener to closer and would corrupt the tree when
+            // they sit at different depths.
+            bool split = false;
+            delimiter *next = S_insert_emph_split(subj, opener, closer, &split);
+            closer = split ? next : S_insert_emph(subj, opener, closer, tolerant);
+          } else {
+            closer = S_insert_emph(subj, opener, closer, tolerant);
+          }
         } else {
           closer = closer->next;
         }
@@ -862,6 +873,124 @@ static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stac
          subj->last_delim->position >= stack_bottom) {
     remove_delimiter(subj, subj->last_delim);
   }
+}
+
+// Wrap the sibling run [first .. last] inclusive in a fresh emph/strong node,
+// placed where `first` was. Each fragment carries the source range of the
+// content it actually covers, not the original delimiter pair's span, so a
+// split pair reports one honest range per fragment rather than two overlapping
+// copies of the whole. Returns the new node, or NULL for an empty range.
+static cmark_node *S_wrap_range(subject *subj, cmark_node *first,
+                                cmark_node *last, bufsize_t use_delims) {
+  cmark_node *emph, *tmp, *tmpnext;
+  int start_line, start_column, end_line, end_column;
+
+  if (first == NULL || last == NULL || first->parent != last->parent)
+    return NULL;
+
+  start_line = first->start_line;
+  start_column = first->start_column;
+  end_line = last->end_line;
+  end_column = last->end_column;
+
+  emph = use_delims == 1 ? make_emph(subj->mem) : make_strong(subj->mem);
+  cmark_node_insert_before(first, emph);
+
+  tmp = first;
+  for (;;) {
+    tmpnext = (tmp == last) ? NULL : tmp->next;
+    cmark_node_unlink(tmp);
+    append_child(emph, tmp);
+    if (tmpnext == NULL)
+      break;
+    tmp = tmpnext;
+  }
+
+  emph->start_line = start_line;
+  emph->start_column = start_column;
+  emph->end_line = end_line;
+  emph->end_column = end_column;
+  return emph;
+}
+
+// R8: the opener and closer sit at different tree depths, so their ranges
+// cross -- one begins inside another range and ends outside it. A tree cannot
+// hold a crossing, so the range is cut at every boundary between the two and
+// reopened past it. One delimiter pair therefore yields several nodes.
+//
+//   **12*34**56*   the '*' opener lives inside <strong>, its closer does not
+//                  -> <strong>12<em>34</em></strong><em>56</em>
+//
+// Returns the next closer to examine, or NULL when the pair is not actually a
+// crossing and the caller should use the ordinary single-node path.
+static delimiter *S_insert_emph_split(subject *subj, delimiter *opener,
+                                      delimiter *closer, bool *split) {
+  cmark_node *opener_inl = opener->inl_text;
+  cmark_node *closer_inl = closer->inl_text;
+  bufsize_t opener_num_chars = opener_inl->as.literal.len;
+  bufsize_t closer_num_chars = closer_inl->as.literal.len;
+  bufsize_t use_delims;
+  cmark_node *anc, *cur, *parent;
+  delimiter *delim, *tmp_delim, *res;
+
+  *split = false;
+
+  if (opener_inl->parent == closer_inl->parent)
+    return NULL; // same frame: no crossing
+
+  // Climb from the opener to the ancestor that is a sibling of the closer.
+  anc = opener_inl;
+  while (anc->parent != NULL && anc->parent != closer_inl->parent)
+    anc = anc->parent;
+  if (anc->parent == NULL)
+    return NULL; // unrelated frames; leave it to the caller
+
+  use_delims = (closer_num_chars >= 2 && opener_num_chars >= 2) ? 2 : 1;
+
+  // Inner levels: at each frame from the opener up to `anc`, wrap everything
+  // after the current node to the end of that frame. This is the fragment that
+  // stays inside the enclosing node.
+  cur = opener_inl;
+  while (cur != anc) {
+    parent = cur->parent;
+    S_wrap_range(subj, cur->next, parent->last_child, use_delims);
+    cur = parent;
+  }
+
+  // Outer level: wrap from just past `anc` up to just before the closer. This
+  // is the fragment that lives beyond the enclosing node.
+  if (anc->next != closer_inl)
+    S_wrap_range(subj, anc->next, closer_inl->prev, use_delims);
+
+  opener_num_chars -= use_delims;
+  closer_num_chars -= use_delims;
+  opener_inl->as.literal.len = opener_num_chars;
+  closer_inl->as.literal.len = closer_num_chars;
+
+  // Interior delimiters cannot outlive a split: the frames they referred to
+  // have been rebuilt around them.
+  delim = closer->previous;
+  while (delim != NULL && delim != opener) {
+    tmp_delim = delim->previous;
+    remove_delimiter(subj, delim);
+    delim = tmp_delim;
+  }
+
+  if (opener_num_chars == 0) {
+    cmark_node_unlink(opener_inl);
+    cmark_node_free(opener_inl);
+    remove_delimiter(subj, opener);
+  }
+
+  res = closer->next;
+  if (closer_num_chars == 0) {
+    cmark_node_unlink(closer_inl);
+    cmark_node_free(closer_inl);
+    remove_delimiter(subj, closer);
+  }
+
+  *split = true;
+  return res;
 }
 
 static delimiter *S_insert_emph(subject *subj, delimiter *opener,
