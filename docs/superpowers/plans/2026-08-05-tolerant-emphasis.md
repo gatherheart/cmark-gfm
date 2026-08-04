@@ -4,7 +4,7 @@
 
 **Goal:** Add an opt-in `CMARK_OPT_TOLERANT_EMPHASIS` mode to cmark-gfm that parses ten collected malformed-emphasis inputs the way an author would expect, without changing any default behavior.
 
-**Architecture:** `process_emphasis` is split into a *plan* phase (record candidate opener/closer pairs, mutate nothing), a *prune* phase (drop pairs rejected by cross-pair rules), and an *apply* phase (mutate the tree). Nine rules then hook into those phases. The split is behavior-preserving and lands first; every rule after it is gated on the option bit.
+**Architecture:** Every change is a local, flag-gated adjustment to `scan_delims` and the existing single-pass closer walk in `process_emphasis`. No restructure of that function is required. A `test/strict-oracle.sh` fixture of 14 outputs across 6 corpora and 5 writers guards strict behavior after every task.
 
 **Tech Stack:** C99, CMake, Python 3 test harness (`test/spec_tests.py`), Emscripten for the comparison page.
 
@@ -17,7 +17,8 @@
 - Build directory is `build/`; configure with `cmake -S . -B build -DCMARK_TESTS=ON`.
 - Full existing suite gate: `ctest --test-dir build --output-on-failure`.
 - Case numbering follows the spec (`docs/superpowers/specs/2026-08-04-cmark-gfm-tolerant-emphasis-design.md`). Case 4 and case 11 are deliberately absent — 4 is out of scope, 11 duplicates 2.
-- Rule identifiers R1″, R1′, R2ᴛ, R3, R4, R6, R7, R8, R9, R10 are stable and must appear in test names. R2 and R5 do not exist; see the spec.
+- Rule identifiers R1″, R1′, R3, R4, R6, R8, R9, R10 are stable and must appear in test names. R2, R2ᴛ, R5 and R7 were dropped during design and must not be reintroduced; see the spec's Dropped rules section.
+- R10 is conditional: implement it only if a test fails without it (see its task).
 
 ---
 
@@ -106,7 +107,7 @@ Create `test/tolerant.txt`. The fence is exactly 32 backticks, matching `spec.tx
 Cases collected from author expectation. Case numbers match the design spec.
 Cases 4 and 11 are absent by design: 4 is out of scope, 11 duplicates 2.
 
-## Loose closing delimiter (R1", R1', R2t)
+## Loose closing delimiter (R1", R1')
 
 ```````````````````````````````` example
 **안녕하세요 **
@@ -114,7 +115,7 @@ Cases 4 and 11 are absent by design: 4 is out of scope, 11 duplicates 2.
 <p><strong>안녕하세요 </strong></p>
 ````````````````````````````````
 
-## Loose opening delimiter (R1", R1', R2t)
+## Loose opening delimiter (R1", R1')
 
 ```````````````````````````````` example
 ** 안녕하세요**
@@ -122,7 +123,7 @@ Cases 4 and 11 are absent by design: 4 is out of scope, 11 duplicates 2.
 <p><strong> 안녕하세요</strong></p>
 ````````````````````````````````
 
-## Loose closer after punctuation (R1", R1', R2t)
+## Loose closer after punctuation (R1", R1')
 
 ```````````````````````````````` example
 **안녕하세요! **
@@ -130,7 +131,7 @@ Cases 4 and 11 are absent by design: 4 is out of scope, 11 duplicates 2.
 <p><strong>안녕하세요! </strong></p>
 ````````````````````````````````
 
-## Crossing bold and italic (R3, R4, R6, R8, R9, R10)
+## Crossing bold and italic (R3, R4, R6, R8, R9)
 
 ```````````````````````````````` example
 **12*34**56*
@@ -146,12 +147,12 @@ Cases 4 and 11 are absent by design: 4 is out of scope, 11 duplicates 2.
 <p><del>가나<strong>다라</strong></del><strong>마바</strong></p>
 ````````````````````````````````
 
-## Same delimiter inside its own range (R2t, R7, R10)
+## Two loose pairs on one line: case 1 plus case 2 (R1", R1')
 
 ```````````````````````````````` example
 **안녕 **하세요** 반가워**
 .
-<p><strong>안녕 **하세요** 반가워</strong></p>
+<p><strong>안녕 </strong>하세요<strong> 반가워</strong></p>
 ````````````````````````````````
 
 ## Bold and italic together (unchanged)
@@ -186,7 +187,7 @@ Cases 4 and 11 are absent by design: 4 is out of scope, 11 duplicates 2.
 <p><strong>굵게*기울임</strong></p>
 ````````````````````````````````
 
-## Regression: adjacent ranges must stay separate (R2t, R7)
+## Regression: adjacent ranges must stay separate (R4)
 
 ```````````````````````````````` example
 **a** and **b**
@@ -318,66 +319,19 @@ In `test/CMakeLists.txt`, inside the `if (CMARK_SHARED)` block and again beside
     )
 ```
 
-- [ ] **Step 5: Run and record the baseline**
+- [ ] **Step 5: Build the strict-output oracle**
 
-```bash
-cmake -S . -B build -DCMARK_TESTS=ON >/dev/null && cmake --build build -j8 >/dev/null
-ctest --test-dir build -R tolerant --output-on-failure 2>&1 | tail -40
-```
-
-Expected: the seven regression cases and cases 8, 9, 12 PASS; cases 1, 2, 3, 5,
-6, 7, 10 FAIL. Write the exact pass/fail list into the commit message — it is the
-baseline every later task is measured against.
-
-- [ ] **Step 6: Verify existing suites still pass**
-
-```bash
-ctest --test-dir build --output-on-failure 2>&1 | tail -8
-```
-
-Expected: everything except the two `tolerant_*` tests passes.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add test/tolerant.txt test/spec_tests.py test/cmark.py test/CMakeLists.txt
-git commit -m "Add failing test suite for tolerant emphasis
-
-Baseline: cases 8, 9, 12 and all regression guards pass; cases 1, 2, 3, 5,
-6, 7, 10 fail."
-```
-
----
-
-### Task 3: Split `process_emphasis` into plan / prune / apply
-
-This task adds **no** new behavior. Its only deliverable is that strict output is
-byte-identical while the function's shape changes. It is the riskiest task in the
-plan because it is not flag-gated.
-
-**Files:**
-- Modify: `src/inlines.c:672-770` (`process_emphasis`)
-
-**Interfaces:**
-- Consumes: `delimiter` struct from `src/cmark-gfm-extension_api.h:113`.
-- Produces:
-  - `typedef struct { delimiter *opener; delimiter *closer; bool pruned; } emph_pair;`
-  - `static int S_plan_pairs(cmark_parser *, subject *, bufsize_t, emph_pair *, int);`
-  - `static void S_apply_pairs(cmark_parser *, subject *, emph_pair *, int);`
-  - Both used by Tasks 7, 8, 9, 10.
-
-- [ ] **Step 1: Build the strict-output oracle**
-
-One `spec.txt` diff is not enough coverage for an ungated refactor. Capture every
-corpus in the repo, through every writer, before touching `process_emphasis`.
+Two changes in this plan are not flag-gated: extracting `S_find_opener` (Task 4)
+and adding the snip branch (Task 7). Capture every corpus in the repo, through
+every writer, so either can be caught immediately.
 
 Create `test/strict-oracle.sh`:
 
 ```sh
 #!/bin/sh
 # Capture or verify strict (flag-off) output across every corpus and writer.
-# Usage: sh test/strict-oracle.sh save   (before the refactor)
-#        sh test/strict-oracle.sh check  (after any change)
+# Usage: sh test/strict-oracle.sh save   (once, before any rule lands)
+#        sh test/strict-oracle.sh check  (after every change)
 set -eu
 CMARK=./build/src/cmark-gfm
 DIR=/tmp/strict-oracle
@@ -429,110 +383,38 @@ Fourteen outputs across six corpora and five writers is meaningfully stronger th
 one HTML diff — it catches sourcepos drift, `-t commonmark` drift, and extension
 interactions, none of which a plain HTML comparison would see.
 
-- [ ] **Step 2: Add the pair record above `process_emphasis`**
-
-```c
-#define MAX_EMPH_PAIRS 4096
-
-typedef struct {
-  delimiter *opener;
-  delimiter *closer;
-  bool pruned;
-} emph_pair;
-```
-
-`MAX_EMPH_PAIRS` bounds the plan array; on overflow, `S_plan_pairs` stops
-recording and returns the count so far, which degrades to today's behavior rather
-than crashing.
-
-- [ ] **Step 3: Extract the opener search unchanged**
-
-```c
-static delimiter *S_find_opener(subject *subj, delimiter *closer,
-                                bufsize_t stack_bottom,
-                                bufsize_t openers_bottom[3][128]) {
-  delimiter *opener = closer->previous;
-  while (opener != NULL && opener->position >= stack_bottom &&
-         opener->position >= openers_bottom[closer->length % 3][closer->delim_char]) {
-    if (opener->can_open && opener->delim_char == closer->delim_char) {
-      if (!(closer->can_open || opener->can_close) ||
-          closer->length % 3 == 0 ||
-          (opener->length + closer->length) % 3 != 0) {
-        return opener;
-      }
-    }
-    opener = opener->previous;
-  }
-  return NULL;
-}
-```
-
-Copied verbatim from lines 701-712. Do not change the conditions in this task.
-
-- [ ] **Step 4: Rewrite `process_emphasis` to plan, then apply**
-
-Keep the quote handling (`'` and `"`) inline where it is — it mutates literals
-rather than building nodes, and does not participate in pairing. Only `*`, `_`,
-and extension characters go through the plan.
-
-```c
-static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stack_bottom) {
-  emph_pair plan[MAX_EMPH_PAIRS];
-  int n_pairs = S_plan_pairs(parser, subj, stack_bottom, plan, MAX_EMPH_PAIRS);
-  S_apply_pairs(parser, subj, plan, n_pairs);
-}
-```
-
-`S_plan_pairs` is the existing forward closer walk with `S_insert_emph` and
-`extension->insert_inline_from_delim` calls replaced by recording a pair and
-advancing to `closer->next`. `S_apply_pairs` iterates the recorded pairs in
-order and performs exactly the calls that were removed.
-
-Critical detail: the current loop uses the *return value* of `S_insert_emph` to
-advance, because that function may free the closer. In the plan phase there is no
-mutation, so advance with `closer = closer->next` unconditionally. In the apply
-phase, honour the return value as before.
-
-- [ ] **Step 5: Verify byte-identical strict output**
+- [ ] **Step 6: Run and record the baseline**
 
 ```bash
-cmake --build build -j8 >/dev/null
-sh test/strict-oracle.sh check && echo "ALL 14 IDENTICAL"
+cmake -S . -B build -DCMARK_TESTS=ON >/dev/null && cmake --build build -j8 >/dev/null
+ctest --test-dir build -R tolerant --output-on-failure 2>&1 | tail -40
 ```
 
-Expected: `strict oracle check: 14 outputs` then `ALL 14 IDENTICAL`. Any
-`ORACLE DIFF:` line means the refactor changed strict behavior — **stop and fix
-it**. Do not proceed to any rule task with a failing oracle; every later task
-inherits this check, and a drift introduced here would be attributed to a rule.
+Expected: the seven regression cases and cases 8, 9, 12 PASS; cases 1, 2, 3, 5,
+6, 7, 10 FAIL. Write the exact pass/fail list into the commit message — it is the
+baseline every later task is measured against.
 
-The most likely source of drift: the current loop advances via the *return value*
-of `S_insert_emph`, which may free the closer. Step 4 splits that — if the plan
-phase advances differently from the original, output shifts on inputs with
-adjacent delimiter runs. `test/spec.txt` examples 350-410 are the sensitive ones.
-
-- [ ] **Step 6: Run the full suite**
+- [ ] **Step 7: Verify existing suites still pass**
 
 ```bash
 ctest --test-dir build --output-on-failure 2>&1 | tail -8
 ```
 
-Expected: identical results to Task 2 Step 6 — same passes, same two `tolerant_*`
-failures with the same case list.
+Expected: everything except the two `tolerant_*` tests passes.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/inlines.c test/strict-oracle.sh
-git commit -m "Split process_emphasis into plan and apply phases
+git add test/tolerant.txt test/spec_tests.py test/cmark.py test/CMakeLists.txt test/strict-oracle.sh
+git commit -m "Add failing test suite for tolerant emphasis
 
-No behavior change. Verified byte-identical output across 6 corpora and 5
-writers via test/strict-oracle.sh. Prepares for cross-pair rules that must
-inspect all candidate pairs before any tree mutation."
+Baseline: cases 8, 9, 12 and all regression guards pass; cases 1, 2, 3, 5,
+6, 7, 10 fail."
 ```
 
 ---
 
-### Task 4: R1″ and R1′ — whitespace tolerance
+### Task 3: R1″ and R1′ — whitespace tolerance
 
 Targets cases 1, 2, 3.
 
@@ -541,7 +423,7 @@ Targets cases 1, 2, 3.
 - Modify: `src/cmark-gfm-extension_api.h:113` (`delimiter` struct)
 
 **Interfaces:**
-- Consumes: `S_plan_pairs` from Task 3.
+- Consumes: the existing closer walk in `process_emphasis` (`src/inlines.c:672`).
 - Produces: `delimiter.loose_open`, `delimiter.loose_close` (both `int`), read by Task 7.
 
 - [ ] **Step 1: Add the loose-edge fields**
@@ -588,9 +470,9 @@ If `subject` has no options field, read it from `parser->options` — check how
 `subj` reaches the parser and use whichever is available; `process_emphasis`
 already receives `cmark_parser *parser`.
 
-- [ ] **Step 3: Enforce R1′ in the plan phase**
+- [ ] **Step 3: Enforce R1′ at the pairing site**
 
-In `S_plan_pairs`, immediately after a candidate opener is found and before
+In the closer walk in `process_emphasis`, immediately after a candidate opener is found and before
 recording the pair:
 
 ```c
@@ -633,16 +515,54 @@ Fixes cases 1, 2, 3."
 
 ---
 
-### Task 5: R3 — drop the rule of three
+### Task 4: R3 — drop the rule of three
 
 **Files:**
-- Modify: `src/inlines.c` (`S_find_opener` from Task 3)
+- Modify: `src/inlines.c:694-712` (extract the opener search, then gate it)
 
 **Interfaces:**
-- Consumes: `S_find_opener`.
-- Produces: no new symbols.
+- Consumes: the opener search inlined at `src/inlines.c:694-712`.
+- Produces: `static delimiter *S_find_opener(subject *, delimiter *, bufsize_t, bufsize_t[3][128], bool tolerant);` used by Task 5.
 
-- [ ] **Step 1: Gate the `% 3` conditions**
+- [ ] **Step 1: Extract the opener search**
+
+The search is currently inlined in the closer walk at `src/inlines.c:694-712`.
+Lift it verbatim — no condition changes in this step — so the next step has one
+place to gate:
+
+```c
+static delimiter *S_find_opener(subject *subj, delimiter *closer,
+                                bufsize_t stack_bottom,
+                                bufsize_t openers_bottom[3][128],
+                                bool tolerant) {
+  delimiter *opener = closer->previous;
+  while (opener != NULL && opener->position >= stack_bottom &&
+         opener->position >= openers_bottom[closer->length % 3][closer->delim_char]) {
+    if (opener->can_open && opener->delim_char == closer->delim_char) {
+      if (!(closer->can_open || opener->can_close) ||
+          closer->length % 3 == 0 ||
+          (opener->length + closer->length) % 3 != 0) {
+        return opener;
+      }
+    }
+    opener = opener->previous;
+  }
+  return NULL;
+}
+```
+
+Replace the inlined loop with a call, then confirm the extraction alone changed
+nothing:
+
+```bash
+cmake --build build -j8 >/dev/null && sh test/strict-oracle.sh check
+```
+
+Expected: `strict oracle check: 14 outputs` with no `ORACLE DIFF` line. This
+extraction is the only part of the task that is not flag-gated, so verify it
+before touching any condition.
+
+- [ ] **Step 2: Gate the `% 3` conditions**
 
 ```c
     if (opener->can_open && opener->delim_char == closer->delim_char) {
@@ -657,25 +577,25 @@ Fixes cases 1, 2, 3."
     }
 ```
 
-`tolerant` is a `bool` parameter added to `S_find_opener`, passed from
-`S_plan_pairs`.
+`tolerant` is a `bool` parameter of `S_find_opener`, passed from the closer
+walk as `(parser->options & CMARK_OPT_TOLERANT_EMPHASIS) != 0`.
 
-- [ ] **Step 2: Run the tolerant tests**
+- [ ] **Step 3: Run the tolerant tests**
 
 ```bash
 cmake --build build -j8 >/dev/null && ctest --test-dir build -R tolerant --output-on-failure 2>&1 | tail -30
 ```
 
 Expected: cases 1, 2, 3 still pass. Case 12 may now FAIL — it depends on R4/R6
-from Task 6 to be restored. Record which cases changed.
+from Task 5 to be restored. Record which cases changed.
 
-- [ ] **Step 3: Verify strict is untouched**
+- [ ] **Step 4: Verify strict is untouched**
 
 ```bash
 sh test/strict-oracle.sh check
 ```
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/inlines.c
@@ -686,16 +606,16 @@ Case 12 regresses until R4/R6 land in the next task."
 
 ---
 
-### Task 6: Lookahead, R4 and R6 — length-aware pairing
+### Task 5: Lookahead, R4 and R6 — length-aware pairing
 
 Targets cases 10 and 12.
 
 **Files:**
-- Modify: `src/inlines.c` (`S_find_opener`, `S_plan_pairs`)
+- Modify: `src/inlines.c` (`S_find_opener` from Task 4, and the closer walk)
 
 **Interfaces:**
-- Consumes: `S_find_opener`, `S_plan_pairs`.
-- Produces: `static void S_mark_later_equal_closers(subject *subj, bufsize_t stack_bottom);` which sets `delimiter.has_later_equal` — add that `int` field to the struct alongside the Task 4 fields.
+- Consumes: `S_find_opener` from Task 4.
+- Produces: `static void S_mark_later_equal_closers(subject *subj, bufsize_t stack_bottom);` which sets `delimiter.has_later_equal` — add that `int` field to the struct alongside the Task 3 fields.
 
 - [ ] **Step 1: Add the field and the lookahead pre-pass**
 
@@ -716,10 +636,10 @@ static void S_mark_later_equal_closers(subject *subj, bufsize_t stack_bottom) {
 ```
 
 The inner loop makes this O(n²) worst case. That is acceptable only because
-`MAX_EMPH_PAIRS` and the R10 bound cap n; if the pathological test in Task 11
+`MAX_EMPH_PAIRS` and the R10 bound cap n; if the pathological test in Task 9
 fails, replace this with a single reverse sweep keyed on `(delim_char, length)`.
 
-Call it at the top of `S_plan_pairs`, only when tolerant.
+Call it at the top of `process_emphasis`, before the closer walk, only when tolerant.
 
 - [ ] **Step 2: Two-sub-pass opener search**
 
@@ -812,123 +732,7 @@ Fixes cases 10 and 12."
 
 ---
 
-### Task 7: R2ᴛ and R7 — tight-first pairing and redundant-nesting prune
-
-Targets case 7. This is the task the plan/apply split exists for.
-
-**Files:**
-- Modify: `src/inlines.c` (`S_plan_pairs`, new `S_prune_redundant`)
-
-**Interfaces:**
-- Consumes: `emph_pair`, `S_plan_pairs`, `S_apply_pairs`, `delimiter.loose_open`, `delimiter.loose_close`.
-- Produces: `static void S_prune_redundant(emph_pair *plan, int n_pairs);`
-
-- [ ] **Step 1: Make the plan walk tight-first**
-
-`S_plan_pairs` runs its closer walk twice under tolerance. Pass A accepts only
-pairs where both inner edges are non-whitespace; pass B accepts the rest, subject
-to R1′.
-
-```c
-  int tight_pass;
-  int passes = tolerant ? 2 : 1;
-  for (tight_pass = 0; tight_pass < passes; tight_pass++) {
-    bool tight_only = tolerant && (tight_pass == 0);
-    /* ... existing forward closer walk ... */
-    /* after finding a candidate opener: */
-    if (tight_only && (opener->loose_open || closer->loose_close))
-      continue;  /* leave both delimiters for pass B */
-```
-
-Pass A must not consume delimiters it skips. Because the plan phase mutates
-nothing, "not consuming" simply means not recording a pair — no extra bookkeeping.
-
-- [ ] **Step 2: Add the redundant-nesting prune**
-
-```c
-static void S_prune_redundant(emph_pair *plan, int n_pairs) {
-  int i, j;
-  for (i = 0; i < n_pairs; i++) {
-    if (plan[i].pruned)
-      continue;
-    for (j = 0; j < n_pairs; j++) {
-      if (i == j || plan[j].pruned)
-        continue;
-      /* Does pair j strictly contain pair i, with the same delimiter char
-       * and run length? Then i would nest the same node type inside itself. */
-      if (plan[j].opener->delim_char == plan[i].opener->delim_char &&
-          plan[j].opener->length == plan[i].opener->length &&
-          plan[j].opener->position < plan[i].opener->position &&
-          plan[j].closer->position > plan[i].closer->position) {
-        plan[i].pruned = true;
-        break;
-      }
-    }
-  }
-}
-```
-
-A pruned pair is never applied, so its delimiters are never consumed and their
-`**` characters remain as literal text. That is the whole mechanism — no undo.
-
-Call it between plan and apply:
-
-```c
-  int n_pairs = S_plan_pairs(parser, subj, stack_bottom, plan, MAX_EMPH_PAIRS);
-  if (parser->options & CMARK_OPT_TOLERANT_EMPHASIS)
-    S_prune_redundant(plan, n_pairs);
-  S_apply_pairs(parser, subj, plan, n_pairs);
-```
-
-`S_apply_pairs` must skip entries with `pruned == true`.
-
-- [ ] **Step 3: Run the tolerant tests**
-
-```bash
-cmake --build build -j8 >/dev/null && ctest --test-dir build -R tolerant --output-on-failure 2>&1 | tail -30
-```
-
-Expected: case 7 PASSES, producing `<strong>안녕 **하세요** 반가워</strong>`. The
-`**a** and **b**` regression still PASSES — neither pair contains the other, so
-nothing is pruned.
-
-- [ ] **Step 4: Add the cross-pass regression from the spec**
-
-Append to `test/tolerant.txt`:
-
-````
-## Regression: R7 prunes a pass-A pair revealed redundant in pass B (R2t, R7)
-
-```````````````````````````````` example
-**a **b** c **
-.
-<p><strong>a **b** c </strong></p>
-````````````````````````````````
-````
-
-This is the input that motivated the plan/apply split. Run the tests; if it
-fails, the prune is not seeing pairs from both passes.
-
-- [ ] **Step 5: Verify strict is untouched**
-
-```bash
-sh test/strict-oracle.sh check
-ctest --test-dir build --output-on-failure 2>&1 | tail -8
-```
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/inlines.c test/tolerant.txt
-git commit -m "Add R2t and R7: tight-first pairing and redundant-nesting prune
-
-Pruning happens on the plan, before any tree mutation, so a pruned pair's
-delimiters are simply never consumed and stay literal. Fixes case 7."
-```
-
----
-
-### Task 8: R9 — keep interior openers alive, in both removal loops
+### Task 6: R9 — keep interior openers alive, in both removal loops
 
 Prerequisite for cases 5 and 6. On its own it changes no expected output.
 
@@ -938,7 +742,7 @@ Prerequisite for cases 5 and 6. On its own it changes no expected output.
 
 **Interfaces:**
 - Consumes: `CMARK_OPT_TOLERANT_EMPHASIS`.
-- Produces: no new symbols. Enables Task 9.
+- Produces: no new symbols. Enables Task 7.
 
 - [ ] **Step 1: Spare viable openers in `S_insert_emph`**
 
@@ -996,15 +800,15 @@ extension has its own, and case 6 needs both patched."
 
 ---
 
-### Task 9: R8 — crossing ranges and snipping
+### Task 7: R8 — crossing ranges and snipping
 
 Targets cases 5 and 6.
 
 **Files:**
-- Modify: `src/inlines.c` (`S_apply_pairs`, new `S_insert_emph_split`)
+- Modify: `src/inlines.c` (the closer walk's `S_insert_emph` call site, new `S_insert_emph_split`)
 
 **Interfaces:**
-- Consumes: `emph_pair`, `S_insert_emph`.
+- Consumes: `S_insert_emph` (`src/inlines.c:755`).
 - Produces: `static cmark_node *S_insert_emph_split(subject *subj, delimiter *opener, delimiter *closer, int use_delims);`
 
 - [ ] **Step 1: Detect the crossing case in apply**
@@ -1089,13 +893,13 @@ One delimiter pair may now produce several nodes. Fixes cases 5 and 6."
 
 ---
 
-### Task 10: R10 — memoize only permanent failures
+### Task 8: R10 — memoize only permanent failures
 
 **Files:**
-- Modify: `src/inlines.c` (`S_plan_pairs`)
+- Modify: `src/inlines.c` (the closer walk's `if (!opener_found)` block)
 
 **Interfaces:**
-- Consumes: `S_plan_pairs`, `S_find_opener`.
+- Consumes: `S_find_opener` from Task 4.
 - Produces: no new symbols.
 
 - [ ] **Step 1: Classify the failure**
@@ -1161,9 +965,9 @@ closers reaching earlier openers."
 
 ---
 
-### Task 11: Pathological input bound
+### Task 9: Pathological input bound
 
-R10 and the Task 6 lookahead both risk quadratic behavior. This task proves they
+R10 and the Task 5 lookahead both risk quadratic behavior. This task proves they
 do not.
 
 **Files:**
@@ -1202,7 +1006,7 @@ time ./build/src/cmark-gfm /tmp/patho.md > /dev/null
 ```
 
 Expected: tolerant is within roughly 2× of strict. If it is dramatically slower,
-replace the Task 6 lookahead's inner loop with a single reverse sweep keyed on
+replace the Task 5 lookahead's inner loop with a single reverse sweep keyed on
 `(delim_char, length)` and re-measure before committing.
 
 - [ ] **Step 4: Commit**
@@ -1214,7 +1018,7 @@ git commit -m "Add pathological input tests for the R10 search bound"
 
 ---
 
-### Task 12: WASM build and comparison page
+### Task 10: WASM build and comparison page
 
 **Files:**
 - Create: `wasm/shim.c`, `wasm/build.sh`, `docs/index.html`
@@ -1338,7 +1142,7 @@ Source → `master` branch, `/docs` folder. The page is then at
 
 ---
 
-### Task 13: Document the accepted costs
+### Task 11: Document the accepted costs
 
 **Files:**
 - Modify: `src/main.c` (warn on `--tolerant -t commonmark`)
@@ -1395,24 +1199,28 @@ git commit -m "Document tolerant mode and warn on unsupported writer combination
 
 ## Self-review notes
 
-**Spec coverage.** Every rule in the spec maps to a task: R1″/R1′ → 4, R3 → 5,
-R4/R6 + lookahead → 6, R2ᴛ/R7 → 7, R9 → 8, R8 → 9, R10 → 10. Accepted costs → 13.
-Tooling → 12. The plan/apply split the spec requires → 3.
+**Spec coverage.** Every rule in the spec maps to a task: R1″/R1′ → 3, R3 → 4,
+R4/R6 + lookahead → 5, R9 → 6, R8 → 7, R10 → 8 (conditional). Accepted costs → 11.
+Tooling → 10. Nothing in the spec is unmapped; R2, R2ᴛ, R5 and R7 are dropped and
+have no task by design.
 
-**Known gap.** Task 9 Step 2 describes the snip algorithm in prose rather than
-complete C. The tree-walking code depends on the exact shape `S_apply_pairs`
-takes in Task 3, which cannot be written before that task lands. The verification
-commands and expected output are exact, so the step is testable; the implementer
-should expect to write ~60 lines of node re-parenting there and lean on the ASan
-run in Step 4.
+**Known gap.** Task 7 Step 2 describes the snip algorithm in prose rather than
+complete C, because the node re-parenting depends on the tree shape the earlier
+rules produce and cannot be written blind. Its verification commands and expected
+output are exact, so the step is still testable; the implementer should expect
+~60 lines of re-parenting and lean on the ASan run that follows.
 
 **Ordering constraints that must not be reordered.**
-Task 3 before any rule. Task 5 (R3) temporarily regresses case 12, which Task 6
-restores — do not stop between them. Task 8 (R9) before Task 9 (R8): surviving
-delimiters are useless until snipping can consume them. Task 10 (R10) after Task
-7 (R7), since R7 is what creates the conditional failures R10 must not memoize.
+Task 4 (R3) temporarily regresses case 12, which Task 5 restores — do not stop
+between them. Task 6 (R9) before Task 7 (R8): delimiters kept alive by R9 are
+useless until snipping can consume them. Task 8 (R10) last, and only if a test
+demands it — its original justification was R7, which no longer exists.
 
-**Unverified traces.** Cases 5 and 7 have not been traced against the post-refactor
-source. Case 6's trace found a real spec error (the second removal loop). Expect
-at least one more surprise in Tasks 7 and 9; the per-task test gates are there to
-catch it.
+**Not flag-gated.** Only two changes touch strict behavior: the `S_find_opener`
+extraction (Task 4 Step 1) and the snip branch (Task 7). Both are guarded by
+`test/strict-oracle.sh`, which every task re-runs.
+
+**Unverified traces.** Cases 5, 6 and 7 are hand-traced, not measured. Case 6's
+trace already found a real spec error — the second delimiter removal loop in
+`extensions/strikethrough.c`. Expect at least one more surprise in Tasks 5 and 7;
+the per-task test gates exist to catch it.

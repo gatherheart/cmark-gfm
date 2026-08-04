@@ -31,14 +31,28 @@ inputs, not twelve. Case numbers below follow the original list.
 | 3 | `**안녕하세요! **` | `**안녕하세요! **` | `<strong>안녕하세요! </strong>` |
 | 5 | `**12*34**56*` | `<strong>12*34</strong>56*` | `<strong>12<em>34</em></strong><em>56</em>` |
 | 6 | `~~가나**다라~~마바**` | `<del>가나**다라</del>마바**` | `<del>가나<strong>다라</strong></del><strong>마바</strong>` |
-| 7 | `**안녕 **하세요** 반가워**` | `<strong>안녕 하세요 반가워</strong>` | `<strong>안녕 **하세요** 반가워</strong>` |
+| 7 | `**안녕 **하세요** 반가워**` | `<strong>안녕 하세요 반가워</strong>` | `<strong>안녕 </strong>하세요<strong> 반가워</strong>` |
 | 8 | `***안녕하세요!***` | `<em><strong>안녕하세요!</strong></em>` | unchanged — already correct |
 | 9 | `*가격은 * 입니다*` | `<em>가격은 * 입니다</em>` | unchanged — already correct |
 | 10 | `**안녕하세요*` | `*<em>안녕하세요</em>` | `<strong>안녕하세요</strong>` |
 | 12 | `**굵게*기울임**` | `<strong>굵게*기울임</strong>` | unchanged — confirmed as desired |
 
-Note case 7: cmark-gfm currently *deletes* the interior `**`. The target keeps
-them as literal text.
+Note case 7: cmark-gfm currently *deletes* the interior `**`. The target is not a
+special case — it is cases 1 and 2 applied side by side:
+
+```
+**안녕 **하세요** 반가워**
+
+**안녕 **      case 1 verbatim (space before the closer)  → <strong>안녕 </strong>
+하세요         no delimiters of its own                    → plain
+** 반가워**    case 2 verbatim (space after the opener)    → <strong> 반가워</strong>
+```
+
+An earlier draft targeted `<strong>안녕 **하세요** 반가워</strong>`, keeping the
+interior `**` literal. That required two extra rules (tight-first pairing and a
+redundant-nesting prune) and an ungated restructure of `process_emphasis`. The
+target above falls out of R1″ and R1′ with no additional rule, so all three were
+dropped. See Dropped rules.
 
 ### Out of scope
 
@@ -90,16 +104,34 @@ All rule numbers are stable identifiers used by the tests. Each is implemented a
 a separate predicate (`S_tolerant_*`) rather than inlined, so any one can be
 reverted independently.
 
-Numbering is non-contiguous. Two rules were dropped during design and their
-numbers are not reused, so that discussion and test names stay aligned:
+### Dropped rules
+
+Numbering is non-contiguous. Four rules were dropped during design and their
+numbers are not reused, so that discussion and test names stay aligned.
 
 - **R2 — intraword `_`.** Dropped with case 4; see Out of scope.
 - **R5 — opener-first lookahead.** Proposed as "a run that can both open and
   close becomes an opener if an equal-length closer appears later." Wrong: under
   tolerance all four runs of `**a** and **b**` can both open and close, so R5
   disqualified the first three as closers and produced
-  `**a** and <strong>b</strong>`. R4 + R6 + R9 already produce case 5 without it,
-  and case 7 needed R2ᴛ instead.
+  `**a** and <strong>b</strong>`. R4 + R6 + R9 produce case 5 without it.
+- **R2ᴛ — tight-first pairing.** A two-pass closer walk, pass A accepting only
+  pairs with two tight inner edges. Existed solely to make case 7 pair its
+  outermost delimiters.
+- **R7 — no redundant same-type nesting.** Discard a pair that would nest a node
+  inside the same node type, emitting its delimiters as literal text. Existed
+  solely to make case 7's interior `**` literal.
+
+R2ᴛ and R7 were dropped together when case 7's target changed to
+`<strong>안녕 </strong>하세요<strong> 반가워</strong>`, which R1″ and R1′ already
+produce. Their removal also removes the design's largest risk: R7 could accept a
+pair in pass A that only pass B revealed as redundant, by which time
+`S_insert_emph` had freed the delimiter text and nothing was left to literalize.
+The counterexample was `**a **b** c **`. Repairing that needed
+`process_emphasis` split into plan, prune, and apply phases — a restructure that
+could not be flag-gated, because it changes the one function every existing spec
+test exercises. None of that is needed now. Every remaining rule is flag-gated
+and local.
 
 ### Delimiter vocabulary
 
@@ -138,22 +170,6 @@ loose-close.
 ```
 
 R1″ alone would let `2 ** 3 ** 4` through; R1′ catches it. Both are needed.
-
-### R2ᴛ — tight-first pairing
-
-`process_emphasis` runs its closer walk **twice**:
-
-- **Pass A** accepts only pairs where both inner edges are non-whitespace.
-- **Pass B** accepts pairs with one loose edge, subject to R1′.
-
-Within each pass, the existing leftmost-closer-first order is preserved.
-
-This is what produces case 7. Pass A pairs run2↔run3 and run1↔run4 (all four
-inner edges tight), which nest, and R7 then discards the inner pair. Cases 1-3
-have a loose edge and so resolve in pass B.
-
-Tight-first is essential: a single-pass leftmost walk pairs run1↔run2 in case 7
-and yields `<strong>안녕 </strong>하세요…`.
 
 ### R3 — drop the rule of three
 
@@ -197,47 +213,6 @@ has_later_equal_closer[i] = ∃ j > i : delim_char[j] == delim_char[i]
 ```
 
 O(n), keyed on (char, length). Consumed only by R6.
-
-### R7 — no redundant same-type nesting
-
-If an accepted pair would produce a node of the same type directly nested inside
-an existing node of that type, discard the **inner** pair and emit its
-delimiters as literal text.
-
-Serves case 7: the inner `**하세요**` becomes literal rather than a nested
-`<strong>`.
-
-**R7 conflicts with R2ᴛ's pass ordering.** The inner pair can be built in pass A
-while the outer pair that makes it redundant is only found in pass B:
-
-```
-**a **b** c **
-r1      r2   r3    r4
-opener edge: a tight    b tight    ␣ loose    EOL loose
-closer edge: ␣ loose    ␣ loose    b tight    ␣   loose
-
-pass A   only r3 has a tight closer edge → pairs r2↔r3 → <strong>b</strong> BUILT
-pass B   r4 closes (loose), r1 opens (tight) → pairs r1↔r4
-         → strong inside strong → R7 must fire on a node pass A already built
-```
-
-By then the `**` text nodes have been freed (`src/inlines.c:818-830` frees a
-fully-consumed opener or closer inline), so there is nothing left to turn back
-into literal text:
-
-```
-R7 able to undo:   <strong>a **b** c </strong>                    wanted
-R7 unable to undo: <strong>a <strong>b</strong> c </strong>       wrong
-```
-
-**Therefore pairing must be planned before it is applied.** Both passes run as a
-planning phase that only records candidate (opener, closer) pairs; R7 then prunes
-redundant pairs from the plan; only afterwards is the tree mutated. This keeps
-delimiter text alive until every rule has had its say, and removes the
-cross-pass undo problem entirely.
-
-This is a larger change to `process_emphasis` than "run the walk twice" — it
-splits the function into plan and apply phases.
 
 ### R8 — crossing ranges and snipping
 
@@ -323,39 +298,52 @@ Distinguish two failure kinds:
 | Kind | Condition | True for later closers? | Memoize |
 |---|---|---|---|
 | permanent | no opener of this character exists before the closer at all | yes | yes |
-| conditional | openers exist; this closer was rejected by R1′, R4, R6, or R7 | no | no |
+| conditional | openers exist; this closer was rejected by R1′, R4, or R6 | no | no |
 
 Memoize only permanent failures. This satisfies the requirement that one failure
 must not block others, while keeping the O(n) bound on the common junk-input
 path.
 
-R10 is required by R7: rejecting case 7's run2↔run3 makes run3 fail, and today's
-unconditional floor would then put run1 out of reach of run4, collapsing the
-whole case to plain text.
+**R10 may not be needed.** Its original justification was R7, which is now
+dropped: rejecting case 7's interior pair made that closer fail, and the
+unconditional floor then put the outermost opener out of reach. Without R7, the
+remaining conditional failures come from R1′, R4, and R6, and case 5 — the only
+in-scope case with a conditional failure — appears to survive the existing floor
+anyway, because cmark-gfm buckets it by `length % 3` and case 5's failing closer
+has length 1 while its later closer has length 2, so they land in different
+buckets.
+
+That is a trace, not a measurement. Implement R10 **last**, and only if a test
+demonstrates a case failing without it. If all cases pass with the floor intact,
+drop R10 and record that in this section.
 
 ## Trace verification
 
 Each case was hand-traced against the rules above. Marked traces are reasoning,
 not measurement — they must be confirmed by the tests in `test/tolerant.txt`.
 
-| # | Resolving rules | Pass |
-|---|---|---|
-| 1 | R1″, R1′, R2ᴛ pass B | B |
-| 2 | R1″, R1′, R2ᴛ pass B | B |
-| 3 | R1″, R1′, R2ᴛ pass B | B |
-| 5 | R3, R4, R6, R8, R9, R10 | A |
-| 6 | R4, R8, R9 | A |
-| 7 | R2ᴛ, R7, R10 | A |
-| 8 | R4 (unchanged behavior) | A |
-| 9 | R1″ keeps the middle `*` inert | A |
-| 10 | R4, R6 | A |
-| 12 | R4, R6 | A |
+| # | Resolving rules |
+|---|---|
+| 1 | R1″, R1′ |
+| 2 | R1″, R1′ |
+| 3 | R1″, R1′ |
+| 5 | R3, R4, R6, R8, R9 |
+| 6 | R4, R8, R9 |
+| 7 | R1″, R1′ — the same rules as cases 1 and 2, applied twice on one line |
+| 8 | R4 (unchanged behavior) |
+| 9 | R1″ length gate keeps the middle `*` inert |
+| 10 | R4, R6 |
+| 12 | R4, R6 |
+
+Case 7 needs no rule of its own. Its two pairs are case 1 (`**안녕 **`, tight
+opener and loose closer) and case 2 (`** 반가워**`, loose opener and tight
+closer) on the same line, with `하세요` between them carrying no delimiters.
 
 Regression traces that must also hold:
 
 | Input | Expected | Guarded by |
 |---|---|---|
-| `**a** and **b**` | two separate `<strong>` | R2ᴛ pass A, R7 not firing |
+| `**a** and **b**` | two separate `<strong>` | all four inner edges tight; R4 pairs nearest equal-length |
 | `snake_case_name` | literal | case 4 out of scope; `_` untouched |
 | `__init__` | literal | same |
 | `MAX_BUFFER_SIZE` | literal | same |
@@ -436,8 +424,7 @@ New dependency: `emsdk`.
 
 | | Risk | Mitigation |
 |---|---|---|
-| R7 fires across passes | Pass A builds a pair that only pass B reveals as redundant, after the delimiter text has been freed. `**a **b** c **` is the counterexample. | Split `process_emphasis` into plan and apply phases (see R7). This is the largest structural change in the design and should be implemented first. |
-| Plan/apply refactor scope | Splitting `process_emphasis` touches the one function every existing spec test depends on | The flag gates only the *rules*, not the restructure, so the plan/apply split must be behaviour-preserving with the flag off. Land it as a separate no-op commit verified by the full existing suite before any rule is added. |
+| R8 changes `process_emphasis` control flow | Snipping needs a different call than `S_insert_emph` when opener and closer sit at different depths | The branch is flag-gated and the existing single-pass walk is otherwise untouched. Verified by `test/strict-oracle.sh`: 14 outputs across 6 corpora and 5 writers must stay byte-identical. |
 | R8 memory ownership | Snipping allocates N nodes per pair; error paths must not leak | Reuse `S_insert_emph`'s existing splice pattern; run under the existing fuzz targets and ASan. |
 | R10 bound | Misclassifying a conditional failure as permanent reintroduces blocking; the reverse reintroduces O(n²) | Pathological-input test with a time assertion. |
 | Rule interaction | Ten interacting rules; hand-traces are not proof | Per-rule tests plus the regression table; the WASM page for exploratory checking. |
