@@ -717,6 +717,14 @@ static delimiter *S_find_opener(delimiter *closer, bufsize_t stack_bottom,
       // "2 ** 3 ** 4"; this rejects it, while still allowing one loose side
       // as cases 1 and 2 require.
       //
+      // R3: the "rule of three" exists to stop intraword emphasis in
+      // *foo**bar**baz*-shaped input. Under tolerance the equal-length
+      // preference (R4) takes over that job, and the rule of three actively
+      // blocks case 5 from pairing its two '*' runs.
+      if (tolerant) {
+        return opener;
+      }
+
       // interior closer of size 2 can't match opener of size 1
       // or of size 1 can't match 2
       if (!(closer->can_open || opener->can_close) ||
