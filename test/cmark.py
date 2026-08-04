@@ -11,7 +11,7 @@ def pipe_through_prog(prog, text):
     [result, err] = p1.communicate(input=text.encode('utf-8'))
     return [p1.returncode, result.decode('utf-8'), err]
 
-def parse(lib, extlib, text, extensions):
+def parse(lib, extlib, text, extensions, options=0):
     cmark_gfm_core_extensions_ensure_registered = extlib.cmark_gfm_core_extensions_ensure_registered
 
     find_syntax_extension = lib.cmark_find_syntax_extension
@@ -34,7 +34,7 @@ def parse(lib, extlib, text, extensions):
 
     cmark_gfm_core_extensions_ensure_registered()
 
-    parser = parser_new(0)
+    parser = parser_new(options)
     for e in set(extensions):
         ext = find_syntax_extension(bytes(e, 'utf-8'))
         if not ext:
@@ -47,8 +47,8 @@ def parse(lib, extlib, text, extensions):
 
     return [parser_finish(parser), parser]
 
-def to_html(lib, extlib, text, extensions):
-    document, parser = parse(lib, extlib, text, extensions)
+def to_html(lib, extlib, text, extensions, options=0):
+    document, parser = parse(lib, extlib, text, extensions, options)
     parser_get_syntax_extensions = lib.cmark_parser_get_syntax_extensions
     parser_get_syntax_extensions.restype = c_void_p
     parser_get_syntax_extensions.argtypes = [c_void_p]
@@ -58,11 +58,11 @@ def to_html(lib, extlib, text, extensions):
     render_html.restype = c_char_p
     render_html.argtypes = [c_void_p, c_int, c_void_p]
     # 1 << 17 == CMARK_OPT_UNSAFE
-    result = render_html(document, 1 << 17, syntax_extensions).decode('utf-8')
+    result = render_html(document, (1 << 17) | options, syntax_extensions).decode('utf-8')
     return [0, result, '']
 
-def to_commonmark(lib, extlib, text, extensions):
-    document, _ = parse(lib, extlib, text, extensions)
+def to_commonmark(lib, extlib, text, extensions, options=0):
+    document, _ = parse(lib, extlib, text, extensions, options)
 
     render_commonmark = lib.cmark_render_commonmark
     render_commonmark.restype = c_char_p
@@ -71,14 +71,18 @@ def to_commonmark(lib, extlib, text, extensions):
     return [0, result, '']
 
 class CMark:
-    def __init__(self, prog=None, library_dir=None, extensions=None):
+    def __init__(self, prog=None, library_dir=None, extensions=None, options=0):
         self.prog = prog
         self.extensions = []
+        self.options = options
         if extensions:
             self.extensions = extensions.split()
 
         if prog:
             prog += ' --unsafe'
+            # 1 << 18 == CMARK_OPT_TOLERANT_EMPHASIS
+            if options & (1 << 18):
+                prog += ' --tolerant'
             extsfun = lambda exts: ''.join([' -e ' + e for e in set(exts)])
             self.to_html = lambda x, exts=[]: pipe_through_prog(prog + extsfun(exts + self.extensions), x)
             self.to_commonmark = lambda x, exts=[]: pipe_through_prog(prog + ' -t commonmark' + extsfun(exts + self.extensions), x)
@@ -100,6 +104,6 @@ class CMark:
             cmark = CDLL(libpath)
             extlib = CDLL(os.path.join(
                 library_dir, "..", "extensions", prefix + "cmark-gfm-extensions" + suffix))
-            self.to_html = lambda x, exts=[]: to_html(cmark, extlib, x, exts + self.extensions)
-            self.to_commonmark = lambda x, exts=[]: to_commonmark(cmark, extlib, x, exts + self.extensions)
+            self.to_html = lambda x, exts=[]: to_html(cmark, extlib, x, exts + self.extensions, self.options)
+            self.to_commonmark = lambda x, exts=[]: to_commonmark(cmark, extlib, x, exts + self.extensions, self.options)
 

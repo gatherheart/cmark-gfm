@@ -21,6 +21,9 @@ if __name__ == "__main__":
             default=None, help='directory containing dynamic library')
     parser.add_argument('--extensions', dest='extensions', nargs='?',
             default=None, help='space separated list of extensions to enable')
+    parser.add_argument('--tolerant', dest='tolerant',
+            action='store_const', const=True, default=False,
+            help='enable CMARK_OPT_TOLERANT_EMPHASIS')
     parser.add_argument('--no-normalize', dest='normalize',
             action='store_const', const=False, default=True,
             help='do not normalize HTML')
@@ -144,7 +147,10 @@ if __name__ == "__main__":
         exit(0)
     else:
         skipped = len(all_tests) - len(tests)
-        converter = CMark(prog=args.program, library_dir=args.library_dir, extensions=args.extensions).to_html
+        # 1 << 18 == CMARK_OPT_TOLERANT_EMPHASIS
+        converter = CMark(prog=args.program, library_dir=args.library_dir,
+                          extensions=args.extensions,
+                          options=(1 << 18) if args.tolerant else 0).to_html
         result_counts = {'pass': 0, 'fail': 0, 'error': 0, 'skip': skipped}
         for test in tests:
             do_test(converter, test, args.normalize, result_counts)

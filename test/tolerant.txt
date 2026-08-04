@@ -1,0 +1,144 @@
+# Tolerant emphasis
+
+Cases collected from author expectation, parsed with
+CMARK_OPT_TOLERANT_EMPHASIS. Case numbers match the design spec at
+docs/superpowers/specs/2026-08-04-cmark-gfm-tolerant-emphasis-design.md
+
+Cases 4 and 11 are absent by design: case 4 (intraword _) is out of scope to
+protect snake_case identifiers, and case 11 duplicates case 2.
+
+## Case 1 - loose closing delimiter (R1", R1')
+
+```````````````````````````````` example
+**안녕하세요 **
+.
+<p><strong>안녕하세요 </strong></p>
+````````````````````````````````
+
+## Case 2 - loose opening delimiter (R1", R1')
+
+```````````````````````````````` example
+** 안녕하세요**
+.
+<p><strong> 안녕하세요</strong></p>
+````````````````````````````````
+
+## Case 3 - loose closer after punctuation (R1", R1')
+
+```````````````````````````````` example
+**안녕하세요! **
+.
+<p><strong>안녕하세요! </strong></p>
+````````````````````````````````
+
+## Case 5 - crossing bold and italic (R3, R4, R6, R8, R9)
+
+```````````````````````````````` example
+**12*34**56*
+.
+<p><strong>12<em>34</em></strong><em>56</em></p>
+````````````````````````````````
+
+## Case 6 - crossing strikethrough and bold (R4, R8, R9)
+
+```````````````````````````````` example strikethrough
+~~가나**다라~~마바**
+.
+<p><del>가나<strong>다라</strong></del><strong>마바</strong></p>
+````````````````````````````````
+
+## Case 7 - two loose pairs on one line, case 1 plus case 2 (R1", R1')
+
+```````````````````````````````` example
+**안녕 **하세요** 반가워**
+.
+<p><strong>안녕 </strong>하세요<strong> 반가워</strong></p>
+````````````````````````````````
+
+## Case 8 - bold and italic together (already correct)
+
+```````````````````````````````` example
+***안녕하세요!***
+.
+<p><em><strong>안녕하세요!</strong></em></p>
+````````````````````````````````
+
+## Case 9 - literal asterisk inside italic (already correct)
+
+```````````````````````````````` example
+*가격은 * 입니다*
+.
+<p><em>가격은 * 입니다</em></p>
+````````````````````````````````
+
+## Case 10 - truncated closing delimiter (R4, R6)
+
+```````````````````````````````` example
+**안녕하세요*
+.
+<p><strong>안녕하세요</strong></p>
+````````````````````````````````
+
+## Case 12 - lone interior asterisk stays literal (R4, R6)
+
+```````````````````````````````` example
+**굵게*기울임**
+.
+<p><strong>굵게*기울임</strong></p>
+````````````````````````````````
+
+## Regression - adjacent ranges stay separate (R4)
+
+```````````````````````````````` example
+**a** and **b**
+.
+<p><strong>a</strong> and <strong>b</strong></p>
+````````````````````````````````
+
+## Regression - snake_case untouched (case 4 out of scope)
+
+```````````````````````````````` example
+snake_case_name
+.
+<p>snake_case_name</p>
+````````````````````````````````
+
+## Regression - dunder untouched (pins current behavior)
+
+```````````````````````````````` example
+__init__
+.
+<p><strong>init</strong></p>
+````````````````````````````````
+
+## Regression - screaming snake untouched
+
+```````````````````````````````` example
+MAX_BUFFER_SIZE
+.
+<p>MAX_BUFFER_SIZE</p>
+````````````````````````````````
+
+## Regression - single asterisk arithmetic (R1" length gate)
+
+```````````````````````````````` example
+2 * 3 * 4 = 24
+.
+<p>2 * 3 * 4 = 24</p>
+````````````````````````````````
+
+## Regression - single asterisk prose (R1" length gate)
+
+```````````````````````````````` example
+a * b, c * d
+.
+<p>a * b, c * d</p>
+````````````````````````````````
+
+## Regression - both edges loose is rejected (R1')
+
+```````````````````````````````` example
+2 ** 3 ** 4
+.
+<p>2 ** 3 ** 4</p>
+````````````````````````````````

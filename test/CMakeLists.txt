@@ -54,10 +54,27 @@ IF (PYTHONINTERP_FOUND)
       "${CMAKE_CURRENT_SOURCE_DIR}/entity_tests.py"
       "--library-dir" "${CMAKE_CURRENT_BINARY_DIR}/../src"
       )
+
+    add_test(tolerant_library
+      ${PYTHON_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/spec_tests.py" "--no-normalize"
+      "--spec" "${CMAKE_CURRENT_SOURCE_DIR}/tolerant.txt" "--tolerant"
+      "--extensions" "strikethrough"
+      "--library-dir" "${CMAKE_CURRENT_BINARY_DIR}/../src"
+      )
   endif()
 
   add_test(spectest_executable
     ${PYTHON_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/spec_tests.py" "--no-normalize" "--spec" "${CMAKE_CURRENT_SOURCE_DIR}/spec.txt" "--program" "${CMAKE_CURRENT_BINARY_DIR}/../src/cmark-gfm"
+    )
+
+  add_test(tolerant_executable
+    ${PYTHON_EXECUTABLE}
+    "${CMAKE_CURRENT_SOURCE_DIR}/spec_tests.py"
+    "--no-normalize"
+    "--spec" "${CMAKE_CURRENT_SOURCE_DIR}/tolerant.txt"
+    "--tolerant"
+    "--extensions" "strikethrough"
+    "--program" "${CMAKE_CURRENT_BINARY_DIR}/../src/cmark-gfm"
     )
 
   add_test(smartpuncttest_executable
