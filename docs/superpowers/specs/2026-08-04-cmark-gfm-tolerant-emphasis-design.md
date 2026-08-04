@@ -75,13 +75,14 @@ conditional on this bit, so the ~650 existing spec tests are unaffected.
 | `src/cmark-gfm.h` | option bit, doc comment |
 | `src/inlines.c` | `scan_delims`, `process_emphasis`, `S_insert_emph`, new lookahead pre-pass and snip helper |
 | `src/main.c` | `--tolerant` flag; warn when combined with `-t commonmark` |
+| `extensions/strikethrough.c` | R9: stop the `done:` loop destroying interior openers |
 | `test/tolerant.txt` | new spec-format test file |
 | `test/CMakeLists.txt` | register the new test |
 | `wasm/shim.c`, `docs/` | comparison page (see Tooling) |
 
-`~~` needs no extension changes: `extensions/strikethrough.c:32` pushes onto the
-same delimiter stack as `*` and `_`, so it participates in the rules below
-automatically.
+`~~` joins the rules below automatically for *pairing* purposes, because
+`extensions/strikethrough.c:32` pushes onto the same delimiter stack as `*` and
+`_`. It does however need one change of its own for R9 — see that rule.
 
 ## Rules
 
@@ -206,6 +207,38 @@ delimiters as literal text.
 Serves case 7: the inner `**하세요**` becomes literal rather than a nested
 `<strong>`.
 
+**R7 conflicts with R2ᴛ's pass ordering.** The inner pair can be built in pass A
+while the outer pair that makes it redundant is only found in pass B:
+
+```
+**a **b** c **
+r1      r2   r3    r4
+opener edge: a tight    b tight    ␣ loose    EOL loose
+closer edge: ␣ loose    ␣ loose    b tight    ␣   loose
+
+pass A   only r3 has a tight closer edge → pairs r2↔r3 → <strong>b</strong> BUILT
+pass B   r4 closes (loose), r1 opens (tight) → pairs r1↔r4
+         → strong inside strong → R7 must fire on a node pass A already built
+```
+
+By then the `**` text nodes have been freed (`src/inlines.c:818-830` frees a
+fully-consumed opener or closer inline), so there is nothing left to turn back
+into literal text:
+
+```
+R7 able to undo:   <strong>a **b** c </strong>                    wanted
+R7 unable to undo: <strong>a <strong>b</strong> c </strong>       wrong
+```
+
+**Therefore pairing must be planned before it is applied.** Both passes run as a
+planning phase that only records candidate (opener, closer) pairs; R7 then prunes
+redundant pairs from the plan; only afterwards is the tree mutated. This keeps
+delimiter text alive until every rule has had its say, and removes the
+cross-pass undo problem entirely.
+
+This is a larger change to `process_emphasis` than "run the walk twice" — it
+splits the function into plan and apply phases.
+
 ### R8 — crossing ranges and snipping
 
 Two ranges **cross** when one starts inside the other and ends outside it. A
@@ -245,6 +278,34 @@ freeing those that can still open and have not been consumed.
 
 Without this, case 5's interior `*` is destroyed when the `**` pair resolves, and
 the later `*` closer has nothing to pair with.
+
+**There are two such removal loops, not one.** Extensions have their own, and
+`extensions/strikethrough.c:70-77` removes every delimiter between its opener
+and closer:
+
+```c
+done:
+  delim = closer;
+  while (delim != NULL && delim != opener) {
+    tmp_delim = delim->previous;
+    cmark_inline_parser_remove_delimiter(inline_parser, delim);
+    delim = tmp_delim;
+  }
+```
+
+Case 6 fails without patching this too:
+
+```
+~~가나**다라~~마바**
+T1     S1     T2     S2
+
+T2 pairs with T1 → <del> wraps 가나, **, 다라
+strikethrough's done: loop then destroys S1
+S2 finds no ** opener → <del>가나**다라</del>마바**   ← today's broken output
+```
+
+So R9 applies to both loops. An earlier draft of this spec claimed `~~` needed
+no extension changes; that was wrong, and case 6 is the counterexample.
 
 ### R10 — memoize only permanent failures
 
@@ -375,7 +436,8 @@ New dependency: `emsdk`.
 
 | | Risk | Mitigation |
 |---|---|---|
-| R2ᴛ two-pass mutation | Pass A mutates the delimiter list that pass B then walks | Pass A only removes fully-consumed delimiters; pass B re-walks from `stack_bottom`. Needs explicit tests for interleaved tight and loose pairs. |
+| R7 fires across passes | Pass A builds a pair that only pass B reveals as redundant, after the delimiter text has been freed. `**a **b** c **` is the counterexample. | Split `process_emphasis` into plan and apply phases (see R7). This is the largest structural change in the design and should be implemented first. |
+| Plan/apply refactor scope | Splitting `process_emphasis` touches the one function every existing spec test depends on | The flag gates only the *rules*, not the restructure, so the plan/apply split must be behaviour-preserving with the flag off. Land it as a separate no-op commit verified by the full existing suite before any rule is added. |
 | R8 memory ownership | Snipping allocates N nodes per pair; error paths must not leak | Reuse `S_insert_emph`'s existing splice pattern; run under the existing fuzz targets and ASan. |
 | R10 bound | Misclassifying a conditional failure as permanent reintroduces blocking; the reverse reintroduces O(n²) | Pathological-input test with a time assertion. |
 | Rule interaction | Ten interacting rules; hand-traces are not proof | Per-rule tests plus the regression table; the WASM page for exploratory checking. |
