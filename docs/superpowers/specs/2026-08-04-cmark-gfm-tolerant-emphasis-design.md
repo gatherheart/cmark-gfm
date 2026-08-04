@@ -304,18 +304,31 @@ Memoize only permanent failures. This satisfies the requirement that one failure
 must not block others, while keeping the O(n) bound on the common junk-input
 path.
 
-**R10 may not be needed.** Its original justification was R7, which is now
-dropped: rejecting case 7's interior pair made that closer fail, and the
-unconditional floor then put the outermost opener out of reach. Without R7, the
-remaining conditional failures come from R1′, R4, and R6, and case 5 — the only
-in-scope case with a conditional failure — appears to survive the existing floor
-anyway, because cmark-gfm buckets it by `length % 3` and case 5's failing closer
-has length 1 while its later closer has length 2, so they land in different
-buckets.
+**R10 was dropped. Measured, not predicted.**
 
-That is a trace, not a measurement. Implement R10 **last**, and only if a test
-demonstrates a case failing without it. If all cases pass with the floor intact,
-drop R10 and record that in this section.
+Its original justification was R7: rejecting case 7's interior pair made that
+closer fail, and the unconditional floor then put the outermost opener out of
+reach. R7 no longer exists, so that justification went with it.
+
+All 20 tolerant tests pass with cmark-gfm's floor left completely intact, and
+requirement #4 — one failure must not stop the parser handling others — holds
+without any change:
+
+```
+a* **b** c     → a* <strong>b</strong> c        the failed "a*" closer did not block **b**
+x** **a** y    → x** <strong>a</strong> y       the failed "x**" closer did not block **a**
+*a *b* *c*     → *a <em>b</em> <em>c</em>       the failed "*a" opener did not block *b*
+```
+
+The reason is that cmark-gfm's floor is bucketed by `(length % 3, delim_char)`
+and compared with `>=`, not `>`, so the failing delimiter's own position stays
+reachable to later closers. The blocking behaviour the requirement warned about
+only materialises when a rule *rejects* an otherwise-valid pair, which is what
+R7 did and no surviving rule does.
+
+Those three inputs are pinned in `test/tolerant.txt` so that a future rule
+reintroducing conditional rejection will fail loudly rather than silently
+degrade requirement #4.
 
 ## Trace verification
 

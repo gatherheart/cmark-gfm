@@ -142,3 +142,32 @@ a * b, c * d
 .
 <p>2 ** 3 ** 4</p>
 ````````````````````````````````
+
+The three cases below pin the requirement that one malformed construct must
+not stop the parser handling others on the same line. They pass with cmark-gfm's
+existing openers_bottom floor, which is why rule R10 was dropped rather than
+implemented -- see the spec's Dropped rules section.
+
+## Requirement 4 - a failed closer must not block later matches
+
+```````````````````````````````` example
+a* **b** c
+.
+<p>a* <strong>b</strong> c</p>
+````````````````````````````````
+
+## Requirement 4 - a failed two-char closer must not block later matches
+
+```````````````````````````````` example
+x** **a** y
+.
+<p>x** <strong>a</strong> y</p>
+````````````````````````````````
+
+## Requirement 4 - a failed opener must not block later matches
+
+```````````````````````````````` example
+*a *b* *c*
+.
+<p>*a <em>b</em> <em>c</em></p>
+````````````````````````````````
