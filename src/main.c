@@ -243,6 +243,19 @@ int main(int argc, char *argv[]) {
     }
   }
 
+  if ((options & CMARK_OPT_TOLERANT_EMPHASIS) && writer == FORMAT_COMMONMARK) {
+    // Measured: a crossing of the SAME delimiter character cannot be written
+    // back to markdown. **12*34**56* parses to
+    // <strong>12<em>34</em></strong><em>56</em>, and no markdown string
+    // reproduces that tree, so reformatting silently changes the rendering.
+    // Crossings of different characters (~~ against **) do survive.
+    fprintf(stderr,
+            "cmark-gfm: warning: --tolerant with -t commonmark is unsupported. "
+            "Emphasis ranges that cross using the same delimiter character "
+            "cannot be written back to markdown, so the output may render "
+            "differently from the input.\n");
+  }
+
 #if DEBUG
   parser = cmark_parser_new(options);
 #else

@@ -12,6 +12,70 @@ The rest of the README is preserved as-is from the upstream source.  Note that
 the library and binaries produced by this fork are suffixed with `-gfm` in
 order to distinguish them from the upstream.
 
+Tolerant emphasis
+-----------------
+
+This fork adds an opt-in mode, `--tolerant` on the command line or
+`CMARK_OPT_TOLERANT_EMPHASIS` in the library, that accepts emphasis CommonMark
+rejects. **It is off by default and it is not CommonMark.** With the flag off,
+output is byte-identical to upstream cmark-gfm.
+
+Compare the two live: **<https://gatherheart.github.io/cmark-gfm/>** — one
+WebAssembly build, both columns, toggled by that single option bit.
+
+| input | default | `--tolerant` |
+|---|---|---|
+| `**안녕하세요 **` | `**안녕하세요 **` | `<strong>안녕하세요 </strong>` |
+| `** 안녕하세요**` | `** 안녕하세요**` | `<strong> 안녕하세요</strong>` |
+| `**안녕하세요! **` | `**안녕하세요! **` | `<strong>안녕하세요! </strong>` |
+| `**12*34**56*` | `<strong>12*34</strong>56*` | `<strong>12<em>34</em></strong><em>56</em>` |
+| `~~가나**다라~~마바**` | `<del>가나**다라</del>마바**` | `<del>가나<strong>다라</strong></del><strong>마바</strong>` |
+| `**안녕 **하세요** 반가워**` | `<strong>안녕 하세요 반가워</strong>` | `<strong>안녕 </strong>하세요<strong> 반가워</strong>` |
+| `**안녕하세요*` | `*<em>안녕하세요</em>` | `<strong>안녕하세요</strong>` |
+
+The last two rows show the general shape: whitespace beside a `**` no longer
+stops it matching, and two emphasis ranges may now *cross*, which a tree
+expresses by splitting the inner range into more than one node.
+
+### What it deliberately does not change
+
+Intraword `_` is untouched, so identifiers keep working. This is a considered
+exclusion, not an oversight — accepting `안녕_하세요_반가워` would necessarily
+also break `snake_case_name`, since the two are indistinguishable to the parser.
+
+```
+snake_case_name    MAX_BUFFER_SIZE    __init__      unchanged
+2 * 3 * 4 = 24     a * b, c * d       2 ** 3 ** 4   unchanged
+**a** and **b**                                     unchanged
+```
+
+Single-character `*` runs get no tolerance at all, which is what keeps
+arithmetic and prose asterisks literal.
+
+### Limitations
+
+- **`--tolerant` with `-t commonmark` is unsupported** and warns. A crossing
+  that uses the same delimiter character cannot be written back to markdown:
+  `**12*34**56*` has no markdown spelling that re-parses to the same tree, so
+  reformatting would silently change the rendering. Crossings of *different*
+  characters (`~~` against `**`) do survive. Rendering to HTML, XML, LaTeX or
+  man is unaffected.
+- **`--sourcepos` reports one range per fragment.** A split range produces
+  several nodes, each carrying the span of the content it actually covers.
+  Visible in XML output only; HTML carries sourcepos on blocks, not inlines.
+
+### Design and tests
+
+`test/tolerant.txt` holds every case plus the regression guards above, run by
+`ctest -R tolerant`. `test/strict-oracle.sh` pins default output across six
+corpora and five writers. The design rationale, including the rules that were
+tried and dropped, is in
+`docs/superpowers/specs/2026-08-04-cmark-gfm-tolerant-emphasis-design.md`.
+
+To rebuild the comparison page you need [emsdk] on PATH, then `sh wasm/build.sh`.
+
+[emsdk]: https://emscripten.org/docs/getting_started/downloads.html
+
 ---
 
 It provides a shared library (`libcmark`) with functions for parsing

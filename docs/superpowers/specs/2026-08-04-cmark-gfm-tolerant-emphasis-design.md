@@ -393,10 +393,31 @@ are one-way and unaffected. The existing round-trip tests
 (`test/roundtrip_tests.py`, four targets in `test/CMakeLists.txt:45-94`) do not
 enable the flag and keep passing.
 
-This limitation is predicted from the writer's structure, not measured — tolerant
-mode does not exist yet. Verification step: after implementation, run
-`roundtrip_tests.py` with the flag enabled and record the actual result. If it
-contradicts this prediction, relax the warning.
+**Measured after implementation, and the prediction was too broad.** The
+limitation is real but applies only when the crossing uses the *same* delimiter
+character:
+
+```
+**12*34**56*          '*' crossing '*'
+  -t commonmark  →  **12*34****56*
+  reparsed       →  <strong>12</strong>34<strong>56</strong>
+  original       →  <strong>12<em>34</em></strong><em>56</em>        LOST
+
+~~가나**다라~~마바**    '~~' crossing '**'
+  -t commonmark  →  ~~가나**다라**~~**마바**
+  reparsed       →  <del>가나<strong>다라</strong></del><strong>마바</strong>
+  original       →  same                                             STABLE
+```
+
+Case 6 round-trips because its tree holds two *separate* `strong` nodes, which
+the writer can emit as two independent `**` pairs. Case 5 cannot, because both
+of its ranges use `*`: whatever run lengths the writer emits, re-parsing
+regroups them. Seven candidate strings were tried by hand and none reproduces
+case 5's tree, so this is a property of the syntax, not a fixable writer bug.
+
+The existing round-trip suites pass (2/2) because they do not enable the flag.
+The warning in `main.c` therefore names the same-character case specifically
+rather than claiming all crossings are unsafe.
 
 ## Testing
 
