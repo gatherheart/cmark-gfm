@@ -45,6 +45,16 @@ pathological = {
     "many emph openers with no closers":
                  (("_a " * 65000),
                   re.compile("(_a ){64999}_a")),
+    # Worst case for the tolerant lookahead pre-pass: every delimiter is an
+    # opener, so a naive tail rescan never terminates early. Rescanning was
+    # quadratic here -- 65k took far beyond the 5s timeout under --tolerant,
+    # against 0.04s strict.
+    "many asterisk openers with no closers":
+                 (("*a " * 65000),
+                  re.compile("([*]a ){64999}[*]a")),
+    "escalating asterisk run lengths":
+                 (" ".join("*" * ((i % 40) + 1) + "a" for i in range(20000)),
+                  re.compile("a")),
     "many link closers with no openers":
                  (("a]" * 65000),
                   re.compile("(a\]){65000}")),
@@ -114,14 +124,27 @@ def run_test(inp, regex):
             help='program to test')
     parser.add_argument('--library-dir', dest='library_dir', nargs='?',
             default=None, help='directory containing dynamic library')
+    parser.add_argument('--tolerant', dest='tolerant', action='store_const',
+            const=True, default=False,
+            help='enable CMARK_OPT_TOLERANT_EMPHASIS')
     args = parser.parse_args(sys.argv[1:])
-    cmark = CMark(prog=args.program, library_dir=args.library_dir, extensions="table")
+    # 1 << 18 == CMARK_OPT_TOLERANT_EMPHASIS
+    cmark = CMark(prog=args.program, library_dir=args.library_dir,
+                  extensions="table",
+                  options=(1 << 18) if args.tolerant else 0)
 
     [rc, actual, err] = cmark.to_html(inp)
     if rc != 0:
         print('[ERRORED (return code %d)]' % rc)
         print(err)
         exit(1)
+    elif args.tolerant:
+        # The regexes above encode strict-mode output. Tolerant mode changes
+        # emphasis pairing by design, so matching them is meaningless here.
+        # What this run asserts is that the parse COMPLETES -- the caller
+        # enforces TIMEOUT, which is the property at risk: the R4/R6 lookahead
+        # was quadratic and blew far past it on delimiter-dense input.
+        print('[PASSED (completed in time)]')
     elif regex.search(actual):
         print('[PASSED]')
     else:
@@ -144,12 +167,12 @@ if __name__ == '__main__':
             p.terminate()
             p.join()
             print('[TIMED OUT]')
-            if allowed_failures[description]:
+            if allowed_failures.get(description):
                 ignored += 1
             else:
                 errored += 1
         elif p.exitcode != 0:
-            if allowed_failures[description]:
+            if allowed_failures.get(description):
                 ignored += 1
             else:
                 errored += 1

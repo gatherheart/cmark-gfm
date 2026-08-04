@@ -55,6 +55,12 @@ IF (PYTHONINTERP_FOUND)
       "--library-dir" "${CMAKE_CURRENT_BINARY_DIR}/../src"
       )
 
+    add_test(pathological_tolerant_library
+      ${PYTHON_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/pathological_tests.py"
+      "--tolerant"
+      "--library-dir" "${CMAKE_CURRENT_BINARY_DIR}/../src"
+      )
+
     add_test(tolerant_library
       ${PYTHON_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/spec_tests.py" "--no-normalize"
       "--spec" "${CMAKE_CURRENT_SOURCE_DIR}/tolerant.txt" "--tolerant"

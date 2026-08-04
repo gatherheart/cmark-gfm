@@ -707,18 +707,45 @@ static cmark_syntax_extension *get_extension_for_special_char(cmark_parser *pars
 // delimiter shares its character and run length and can close. R6 consults
 // this to avoid spending an opener on a mismatched closer while its own
 // equal-length partner is still ahead.
+// Bound on distinct (delim_char, run length) pairs tracked below. Writing k
+// distinct run lengths costs about k*k/2 input characters, so 512 covers far
+// more than any realistic document. On overflow we under-report
+// has_later_equal, which only makes R6's fallback fire more often; it never
+// corrupts the tree.
+#define MAX_SEEN_CLOSERS 512
+
 static void S_mark_later_equal_closers(subject *subj, bufsize_t stack_bottom) {
-  delimiter *d, *later;
+  // Single reverse sweep. `seen` holds the distinct (char, length) pairs that
+  // can close and lie to the right of the delimiter being inspected, so the
+  // answer is a lookup rather than a rescan of the tail.
+  //
+  // Rescanning the tail per delimiter is quadratic and measurably so: "*a "
+  // repeated 100k times (all openers, no closers, so every rescan runs to the
+  // end) took 65s against 0.04s for strict mode. Because the number of
+  // *distinct* pairs is bounded by O(sqrt(input)) rather than by the delimiter
+  // count, this version stays effectively linear.
+  struct {
+    unsigned char c;
+    bufsize_t len;
+  } seen[MAX_SEEN_CLOSERS];
+  int n_seen = 0;
+  delimiter *d;
+  int i, found;
 
   for (d = subj->last_delim; d != NULL && d->position >= stack_bottom;
        d = d->previous) {
-    d->has_later_equal = 0;
-    for (later = d->next; later != NULL; later = later->next) {
-      if (later->can_close && later->delim_char == d->delim_char &&
-          later->length == d->length) {
-        d->has_later_equal = 1;
+    found = -1;
+    for (i = 0; i < n_seen; i++) {
+      if (seen[i].c == d->delim_char && seen[i].len == d->length) {
+        found = i;
         break;
       }
+    }
+    d->has_later_equal = (found >= 0);
+    if (d->can_close && found < 0 && n_seen < MAX_SEEN_CLOSERS) {
+      seen[n_seen].c = d->delim_char;
+      seen[n_seen].len = d->length;
+      n_seen++;
     }
   }
 }
