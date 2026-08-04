@@ -768,6 +768,12 @@ char *cmark_render_latex_with_mem(cmark_node *root, int options, int width, cmar
  */
 #define CMARK_OPT_FULL_INFO_STRING (1 << 16)
 
+/** Parse emphasis tolerantly: accept delimiter runs that strict CommonMark
+ * rejects, and permit crossing emphasis ranges. Not CommonMark. See
+ * docs/superpowers/specs/2026-08-04-cmark-gfm-tolerant-emphasis-design.md
+ */
+#define CMARK_OPT_TOLERANT_EMPHASIS (1 << 18)
+
 /**
  * ## Version information
  */
