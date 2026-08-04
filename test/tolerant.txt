@@ -171,3 +171,32 @@ x** **a** y
 .
 <p>*a <em>b</em> <em>c</em></p>
 ````````````````````````````````
+
+An unequal-length pair consumes only the characters it uses. Zeroing both runs
+silently deleted text: "a *b***" rendered as "a <em>b</em>", losing the
+trailing "**" that strict mode keeps. Found by differential fuzzing against
+stock cmark-gfm over 59678 random emphasis-dense paragraphs.
+
+## Leftover delimiters must stay literal, not vanish (R6)
+
+```````````````````````````````` example
+a *b***
+.
+<p>a <em>b</em>**</p>
+````````````````````````````````
+
+## Leftover delimiters, longer run (R6)
+
+```````````````````````````````` example
+a *b****
+.
+<p>a <em>b</em>***</p>
+````````````````````````````````
+
+## Leftover underscore must stay literal (R6)
+
+```````````````````````````````` example
+_)12ba ****__ a,
+.
+<p><em>)12ba ****</em>_ a,</p>
+````````````````````````````````

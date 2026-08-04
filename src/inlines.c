@@ -1033,12 +1033,20 @@ static delimiter *S_insert_emph(subject *subj, delimiter *opener,
   // calculate the actual number of characters used from this closer
   if (tolerant && opener_num_chars != closer_num_chars) {
     // R6: this pair only exists because no equal-length partner was available,
-    // so the node type follows the opener and both runs are consumed whole.
-    // That is what turns case 10 (**\uc548\ub155\ud558\uc138\uc694*) into a single
-    // <strong> instead of leaving a stray '*' beside an <em>.
-    use_delims = opener_num_chars >= 2 ? 2 : 1;
-    opener_num_chars = 0;
-    closer_num_chars = 0;
+    // so the node type follows the OPENER, and the closer gives up only as many
+    // characters as the opener actually used. That is what turns case 10
+    // (**\uc548\ub155\ud558\uc138\uc694*) into one <strong> rather than a stray '*' beside an <em>.
+    //
+    // Consumption must be asymmetric, not "consume both runs whole". Zeroing
+    // both discards characters the pair never used, which silently deletes text:
+    // "a *b***" became "a <em>b</em>", losing the trailing "**" that strict
+    // mode keeps as literal.
+    bufsize_t opener_used = opener_num_chars >= 2 ? 2 : 1;
+    bufsize_t closer_used =
+        closer_num_chars < opener_used ? closer_num_chars : opener_used;
+    use_delims = opener_used;
+    opener_num_chars -= opener_used;
+    closer_num_chars -= closer_used;
   } else {
     use_delims = (closer_num_chars >= 2 && opener_num_chars >= 2) ? 2 : 1;
     opener_num_chars -= use_delims;
