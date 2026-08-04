@@ -413,7 +413,8 @@ static cmark_node *handle_backticks(subject *subj, int options) {
 // Scan ***, **, or * and return number scanned, or 0.
 // Advances position.
 static int scan_delims(subject *subj, unsigned char c, bool *can_open,
-                       bool *can_close) {
+                       bool *can_close, bool *loose_open, bool *loose_close,
+                       bool tolerant) {
   int numdelims = 0;
   bufsize_t before_char_pos, after_char_pos;
   int32_t after_char = 0;
@@ -468,6 +469,26 @@ static int scan_delims(subject *subj, unsigned char c, bool *can_open,
                    (!cmark_utf8proc_is_punctuation(before_char) ||
                     cmark_utf8proc_is_space(after_char) ||
                     cmark_utf8proc_is_punctuation(after_char));
+
+  // R1": tolerant mode relaxes the whitespace half of flanking, but only for
+  // '*' runs of length >= 2.
+  //
+  // The length gate keeps single-asterisk prose such as "2 * 3 * 4" literal.
+  //
+  // The '*'-only gate matters because '_' derives can_open from
+  // !right_flanking (and can_close from !left_flanking), so relaxing one flag
+  // silently destroys the other: setting right_flanking on the leading run of
+  // "__init__" makes it unable to open, turning <strong>init</strong> into
+  // literal text. '*' has no such cross-dependency. No in-scope case needs '_'
+  // tolerance anyway -- cases 1, 2, 3 and 7 are all '**', and case 4
+  // (intraword '_') is deliberately out of scope.
+  *loose_open = numdelims > 0 && cmark_utf8proc_is_space(after_char);
+  *loose_close = numdelims > 0 && cmark_utf8proc_is_space(before_char);
+  if (tolerant && numdelims >= 2 && c == '*') {
+    left_flanking = left_flanking || *loose_open;
+    right_flanking = right_flanking || *loose_close;
+  }
+
   if (c == '_') {
     *can_open = left_flanking &&
                 (!right_flanking || cmark_utf8proc_is_punctuation(before_char));
@@ -524,12 +545,15 @@ static void pop_bracket(subject *subj) {
   subj->mem->free(b);
 }
 
-static void push_delimiter(subject *subj, unsigned char c, bool can_open,
-                           bool can_close, cmark_node *inl_text) {
+static void push_delimiter_ex(subject *subj, unsigned char c, bool can_open,
+                              bool can_close, bool loose_open,
+                              bool loose_close, cmark_node *inl_text) {
   delimiter *delim = (delimiter *)subj->mem->calloc(1, sizeof(delimiter));
   delim->delim_char = c;
   delim->can_open = can_open;
   delim->can_close = can_close;
+  delim->loose_open = loose_open;
+  delim->loose_close = loose_close;
   delim->inl_text = inl_text;
   delim->position = subj->pos;
   delim->length = inl_text->as.literal.len;
@@ -539,6 +563,11 @@ static void push_delimiter(subject *subj, unsigned char c, bool can_open,
     delim->previous->next = delim;
   }
   subj->last_delim = delim;
+}
+
+static void push_delimiter(subject *subj, unsigned char c, bool can_open,
+                           bool can_close, cmark_node *inl_text) {
+  push_delimiter_ex(subj, c, can_open, can_close, false, false, inl_text);
 }
 
 static void push_bracket(subject *subj, bool image, cmark_node *inl_text) {
@@ -566,13 +595,15 @@ static void push_bracket(subject *subj, bool image, cmark_node *inl_text) {
 }
 
 // Assumes the subject has a c at the current position.
-static cmark_node *handle_delim(subject *subj, unsigned char c, bool smart) {
+static cmark_node *handle_delim(subject *subj, unsigned char c, bool smart,
+                                bool tolerant) {
   bufsize_t numdelims;
   cmark_node *inl_text;
-  bool can_open, can_close;
+  bool can_open, can_close, loose_open, loose_close;
   cmark_chunk contents;
 
-  numdelims = scan_delims(subj, c, &can_open, &can_close);
+  numdelims = scan_delims(subj, c, &can_open, &can_close, &loose_open,
+                          &loose_close, tolerant);
 
   if (c == '\'' && smart) {
     contents = cmark_chunk_literal(RIGHTSINGLEQUOTE);
@@ -586,7 +617,8 @@ static cmark_node *handle_delim(subject *subj, unsigned char c, bool smart) {
   inl_text = make_str(subj, subj->pos - numdelims, subj->pos - 1, contents);
 
   if ((can_open || can_close) && (!(c == '\'' || c == '"') || smart)) {
-    push_delimiter(subj, c, can_open, can_close, inl_text);
+    push_delimiter_ex(subj, c, can_open, can_close, loose_open, loose_close,
+                      inl_text);
   }
 
   return inl_text;
@@ -677,6 +709,7 @@ static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stac
   bool opener_found;
   bufsize_t openers_bottom[3][128];
   int i;
+  bool tolerant = (parser->options & CMARK_OPT_TOLERANT_EMPHASIS) != 0;
 
   // initialize openers_bottom:
   memset(&openers_bottom, 0, sizeof(openers_bottom));
@@ -703,7 +736,12 @@ static void process_emphasis(cmark_parser *parser, subject *subj, bufsize_t stac
       opener_found = false;
       while (opener != NULL && opener->position >= stack_bottom &&
              opener->position >= openers_bottom[closer->length % 3][closer->delim_char]) {
-        if (opener->can_open && opener->delim_char == closer->delim_char) {
+        if (opener->can_open && opener->delim_char == closer->delim_char &&
+            !(tolerant && opener->loose_open && closer->loose_close)) {
+          // R1': never pair two loose inner edges. R1" alone would accept
+          // "2 ** 3 ** 4"; this rejects it, while still allowing one loose
+          // side as cases 1 and 2 require.
+          //
           // interior closer of size 2 can't match opener of size 1
           // or of size 1 can't match 2
           if (!(closer->can_open || opener->can_close) ||
@@ -1479,7 +1517,8 @@ static int parse_inline(cmark_parser *parser, subject *subj, cmark_node *parent,
   case '_':
   case '\'':
   case '"':
-    new_inl = handle_delim(subj, c, (options & CMARK_OPT_SMART) != 0);
+    new_inl = handle_delim(subj, c, (options & CMARK_OPT_SMART) != 0,
+                           (options & CMARK_OPT_TOLERANT_EMPHASIS) != 0);
     break;
   case '-':
     new_inl = handle_hyphen(subj, (options & CMARK_OPT_SMART) != 0);

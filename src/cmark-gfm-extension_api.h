@@ -119,6 +119,14 @@ typedef struct delimiter {
   unsigned char delim_char;
   int can_open;
   int can_close;
+  /** Tolerant emphasis (CMARK_OPT_TOLERANT_EMPHASIS) bookkeeping. An "inner
+   * edge" is the character facing the content the run would wrap: the one after
+   * the run when opening, the one before it when closing. A run is loose on
+   * that side when the inner edge is whitespace. Zero for delimiters pushed by
+   * extensions, which is the safe default (treated as tight).
+   */
+  int loose_open;
+  int loose_close;
 } delimiter;
 
 /**
