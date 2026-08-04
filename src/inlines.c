@@ -897,7 +897,13 @@ static delimiter *S_insert_emph(subject *subj, delimiter *opener,
   delim = closer->previous;
   while (delim != NULL && delim != opener) {
     tmp_delim = delim->previous;
-    remove_delimiter(subj, delim);
+    // R9: under tolerance, an interior delimiter that can still open must
+    // survive, because a later closer may pair with it across this node's
+    // boundary. Case 5 depends on it: the '*' inside **12*34** has to outlive
+    // the '**' pair so the trailing '*' can find it.
+    if (!(tolerant && delim->can_open)) {
+      remove_delimiter(subj, delim);
+    }
     delim = tmp_delim;
   }
 

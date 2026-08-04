@@ -71,7 +71,15 @@ done:
   delim = closer;
   while (delim != NULL && delim != opener) {
     tmp_delim = delim->previous;
-    cmark_inline_parser_remove_delimiter(inline_parser, delim);
+    // R9: there are two delimiter removal loops in this codebase, not one.
+    // Under CMARK_OPT_TOLERANT_EMPHASIS an interior delimiter that can still
+    // open must survive so a later closer can pair with it across this node's
+    // boundary. Case 6 (~~가나**다라~~마바**) depends on it: without this, the
+    // '**' opener inside the strikethrough is destroyed here and the trailing
+    // '**' has no partner.
+    if (!((parser->options & CMARK_OPT_TOLERANT_EMPHASIS) && delim->can_open)) {
+      cmark_inline_parser_remove_delimiter(inline_parser, delim);
+    }
     delim = tmp_delim;
   }
 
