@@ -40,3 +40,6 @@ alltests.md
 progit/
 bench/benchinput.md
 test/afl_results/
+
+# WebAssembly build tree for the comparison page (docs/cmark-gfm.{js,wasm} ARE committed)
+wasm/build/
